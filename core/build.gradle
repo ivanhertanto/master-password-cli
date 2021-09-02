@@ -1,0 +1,80 @@
+import org.gradle.internal.jvm.Jvm
+
+
+plugins {
+    id 'base'
+    id 'cpp-library'
+}
+
+description = 'Master Password Algorithm Implementation'
+
+artifacts {
+    'default' task( type: Zip, 'archive' ) {
+        // TODO: exclude lib files that are produced by the build.
+        from 'lib'
+
+        components.withType( ComponentWithRuntimeFile ) {
+            if (optimized)
+                from runtimeFile, {
+                    into targetMachine.getOperatingSystemFamily().getName() + '/' + targetMachine.getArchitecture().getName().replace('-', '_')
+                }
+        }
+    }
+}
+
+library {
+    baseName.set( 'mpw' )
+    linkage.set( [Linkage.SHARED] )
+    source.from files( 'src' )
+
+    // JNI support requires JDK.
+    privateHeaders.from files( new File( Jvm.current().javaHome, 'include' ) ) { first().eachDir { from it } }
+
+    // Cross-compile for these native host platforms.
+    // TODO: blocked by: https://github.com/gradle/gradle-native/issues/1031
+    targetMachines.set( [
+            machines.linux.x86, machines.linux.x86_64,
+            machines.windows.x86, machines.windows.x86_64,
+            machines.macOS.x86_64
+    ] )
+
+    binaries.configureEach( CppBinary ) {
+        def compile = compileTask.get(), link = linkTask.get()
+        def platform = targetMachine.getOperatingSystemFamily().getName()
+        def arch = targetMachine.getArchitecture().getName().replace('-', '_')
+
+        compile.macros.put("MPW_SODIUM", "1")
+
+        dependencies {
+            // libsodium
+            compile.dependsOn tasks.maybeCreate( "build_libsodium-${platform}", Exec ).configure {
+                commandLine 'bash', "$rootDir/lib/bin/build_libsodium-${platform}"
+                privateHeaders.from "$rootDir/lib/libsodium/build-${platform}~/out/include"
+                implementation fileTree( "$rootDir/lib/libsodium/build-${platform}~/out/lib/${arch}" )
+            }
+            clean.dependsOn tasks.maybeCreate( "clean_libsodium-${platform}", Exec ).configure {
+                commandLine 'bash', "$rootDir/lib/bin/build_libsodium-${platform}", 'clean'
+            }
+
+            // libjson-c
+            compile.dependsOn tasks.maybeCreate( "build_libjson-c-${platform}", Exec ).configure {
+                commandLine 'bash', "$rootDir/lib/bin/build_libjson-c-${platform}"
+                privateHeaders.from "$rootDir/lib/libjson-c/build-${platform}~/out/include"
+                implementation fileTree( "$rootDir/lib/libjson-c/build-${platform}~/out/lib/${arch}" )
+            }
+            clean.dependsOn tasks.maybeCreate( "clean_libjson-c-${platform}", Exec ).configure {
+                commandLine 'bash', "$rootDir/lib/bin/build_libjson-c-${platform}", 'clean'
+            }
+        }
+
+        // Reconfigure the toolchain from C++ to C.
+        compile.source.from fileTree( "src" )
+        if (toolChain in GccCompatibleToolChain) {
+            compile.compilerArgs = ['-x', 'c', '-std=c11', '-O3', '-Werror', '-Wall']
+            link.linkerArgs = ['-lc', '-nodefaultlibs', '-flto']
+        } else if (toolChain in VisualCpp) {
+            // TODO: Should this be shared instead of static?
+            compile.compilerArgs = ['/TC', '/MT', '/Ox', '/DSODIUM_STATIC', '/DSODIUM_EXPORT=', '/std:c11']
+        }
+    }
+}

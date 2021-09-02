@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -e
+
+cd "${BASH_SOURCE%/*}/.."
+tag=$(git describe --exact-match --match '*-cli*') || { echo >&2 "Tree is not at a release tag."; exit 1; }
+version=$(git describe --match '*-cli*' --long --dirty --broken)
+[[ $version != *-dirty ]] || { echo >&2 "Tree is dirty, first commit any changes."; exit 1; }
+
+mpwArchive=mpw-$version.tar.gz
+[[ -e $mpwArchive ]] && echo >&2 "WARNING: $mpwArchive already exists.  Will overwrite."
+read -n1 -p "Will prepare and release $mpwArchive.  Press a key to continue or ^C to abort."
+
+echo "Cleaning .."
+git clean -ffdx .
+
+echo "Creating archive $mpwArchive .."
+echo "$version" > cli/VERSION
+git show --show-signature --pretty=format:%H --quiet "$tag" > cli/TAG
+{ git ls-files -z .; printf '%s\0' cli/VERSION cli/TAG; } | xargs -0 tar -Lcvzf "$mpwArchive"
+
+echo "Creating archive signature $mpwArchive.sig .."
+gpg --detach-sign --local-user 5C2D1D61853F20F2FCDDCCB70EF21226F43EA6BC "$mpwArchive"
+
+echo "Installing archive and signature in site .."
+cd ../../public/site
+mv "$OLDPWD/$mpwArchive" .; [[ -e $_ ]]
+mv "$OLDPWD/$mpwArchive.sig" .; [[ -e $_ ]]
+ln -sf "$mpwArchive" "masterpassword-cli.tar.gz"; [[ -e $_ ]]
+ln -sf "$mpwArchive.sig" "masterpassword-cli.tar.gz.sig"; [[ -e $_ ]]
+
+echo
+echo "Done.  Ready to publish the site."
+echo "     package: $mpwArchive"
+echo "   signature: $mpwArchive.sig"
+echo "         url: https://masterpassword.app/$mpwArchive"

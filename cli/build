@@ -1,0 +1,241 @@
+#!/usr/bin/env bash
+#
+# USAGE
+#   [targets='...'] [mpw_feature=0|1 ...] [CFLAGS='...'] [LDFLAGS='...'] ./build [-v|-d|-h|--] [cc arguments ...]
+#
+#   By default, you should only need to run ./build
+#
+#   -v: verbose mode, outputs state information and compiler commands.
+#   -d: debug build, modifies default build flags to produce binaries best suited for debugging.
+#   -h: show this usage information.
+#
+#   You can customize the targets that are built using targets='...'. Use targets='all' to build all targets.
+#   By default, we only build the 'mpw' target.  
+#   See targets_all for all possible targets as well as the features they support and require.
+#
+#   Several features can be enabled or disabled using feature flags.
+#   See the Features section for an overview of the features, their default setting, their meaning and their dependencies.
+#   You will need to have each of the feature's dependencies installed for the build to succeed with that feature enabled.
+#
+#   Finally, the C compiler can be tuned using CFLAGS, LDFLAGS and compiler arguments passed to the script.
+#
+# BUGS
+#   masterpassword@lyndir.com
+#
+# AUTHOR
+#   Maarten Billemont
+#
+cd "${BASH_SOURCE%/*}"
+shopt -s extglob
+set -e
+
+
+### CONFIGURATION
+verbose=0
+
+# Options
+while getopts :vdh opt; do
+    case $opt in
+        v)      verbose=1 ;;
+        d)      debug=1 ;;
+        h|?)    sed -n '/^[^#]/q;p' "${BASH_SOURCE##*/}"; exit ;;
+    esac
+done
+shift "$(( OPTIND - 1 ))"
+
+# Targets to build
+targets_all=(
+    mpw                     # C CLI version of Master Password (needs: mpw_sodium, optional: mpw_color, mpw_json).
+    mpw-bench               # C CLI Master Password benchmark utility (needs: mpw_sodium).
+    mpw-tests               # C Master Password algorithm test suite (needs: mpw_sodium, mpw_xml).
+)
+targets_default='mpw'       # Override with: targets='...' ./build
+targets=${targets[*]:-$targets_default} 
+
+# Features
+mpw_sodium=${mpw_sodium:-1} # Implement crypto functions with sodium (depends on libsodium).
+mpw_json=${mpw_json:-1}     # Support JSON-based user configuration format (depends on libjson-c).
+mpw_color=${mpw_color:-1}   # Colorized identicon (depends on libncurses).
+mpw_xml=${mpw_xml:-1}       # XML parsing (depends on libxml2).
+
+# Default build flags
+cflags=( -O3 $CFLAGS ); unset CFLAGS
+ldflags=( $LDFLAGS ); unset LDFLAGS
+if (( debug )); then
+    cflags+=( -O0 -g )
+fi
+
+# Version
+if { mpw_version=$(git describe --match '*-cli*' --long --dirty) || mpw_version=$(<VERSION); } 2>/dev/null; then
+    cflags+=( -D"MP_VERSION=$mpw_version" )
+fi
+echo "Current mpw source version ${mpw_version:-<unknown>}..."
+
+# Meta
+if (( verbose )); then
+    echo "mpw_sodium=${mpw_sodium}, mpw_json=${mpw_json}, mpw_color=${mpw_color}, mpw_xml=${mpw_xml}"
+    echo "CFLAGS: ${cflags[*]}"
+    echo "LDFLAGS: ${ldflags[*]}"
+    echo "targets: ${targets[*]}"
+fi
+
+
+### TARGET: MPW
+mpw() {
+    # dependencies
+    use_mpw_sodium required
+    use_mpw_color optional
+    use_mpw_json optional
+
+    # target
+    cflags=(
+        "${cflags[@]}"
+
+        # mpw paths
+        -I"../core/src" -I"src"
+    )
+    ldflags=(
+        "${ldflags[@]}"
+    )
+
+    # build
+    cc "${cflags[@]}" "$@" \
+       "../core/src/base64.c" "../core/src/aes.c" "../core/src/mpw-algorithm.c" \
+       "../core/src/mpw-algorithm_v0.c" "../core/src/mpw-algorithm_v1.c" "../core/src/mpw-algorithm_v2.c" "../core/src/mpw-algorithm_v3.c" \
+       "../core/src/mpw-types.c" "../core/src/mpw-util.c" "../core/src/mpw-marshal-util.c" "../core/src/mpw-marshal.c" "src/mpw-cli-util.c" \
+       "${ldflags[@]}" "src/mpw-cli.c" -o "mpw"
+    echo "done!  You can now run ./mpw-cli-tests, ./install or use ./$_"
+}
+
+
+### TARGET: MPW-BENCH
+mpw-bench() {
+    # dependencies
+    use_mpw_sodium required
+
+    # target
+    cflags=(
+        "${cflags[@]}"
+
+        # mpw paths
+        -I"../core/src" -I"src"
+    )
+    ldflags=(
+        "${ldflags[@]}"
+    )
+
+    # build
+    cc "${cflags[@]}" "$@" \
+       "../core/src/base64.c" "../core/src/aes.c" "../core/src/mpw-algorithm.c" \
+       "../core/src/mpw-algorithm_v0.c" "../core/src/mpw-algorithm_v1.c" "../core/src/mpw-algorithm_v2.c" "../core/src/mpw-algorithm_v3.c" \
+       "../core/src/mpw-types.c" "../core/src/mpw-util.c" \
+       "${ldflags[@]}" "src/mpw-bench.c" -o "mpw-bench"
+    echo "done!  You can now use ./$_"
+}
+
+
+### TARGET: MPW-TESTS
+mpw-tests() {
+    # dependencies
+    use_mpw_sodium required
+    use_mpw_xml required
+
+    # target
+    cflags=(
+        "${cflags[@]}"
+
+        # mpw paths
+        -I"../core/src" -I"src"
+    )
+    ldflags=(
+        "${ldflags[@]}"
+    )
+
+    # build
+    cc "${cflags[@]}" "$@" \
+       "../core/src/base64.c" "../core/src/aes.c" "../core/src/mpw-algorithm.c" \
+       "../core/src/mpw-algorithm_v0.c" "../core/src/mpw-algorithm_v1.c" "../core/src/mpw-algorithm_v2.c" "../core/src/mpw-algorithm_v3.c" \
+       "../core/src/mpw-types.c" "../core/src/mpw-util.c" "src/mpw-tests-util.c" \
+       "${ldflags[@]}" "src/mpw-tests.c" -o "mpw-tests"
+    echo "done!  You can now use ./$_"
+}
+
+
+### TOOLS
+haslib() {
+    cc -x c "${ldflags[@]}" -l"$1" -o /dev/null - <<< 'int main() { return 0; }' &>/dev/null
+}
+cc() (
+    (( verbose )) && set -x
+
+    if { hash llvm-gcc; } 2>/dev/null; then
+        llvm-gcc "$@"
+    elif { hash gcc; } 2>/dev/null; then
+        gcc -std=c11 "$@"
+    elif { hash clang; } 2>/dev/null; then
+        clang "$@"
+    else
+        echo >&2 "Need a compiler.  Please install GCC or LLVM."
+        exit 1
+    fi
+)
+
+
+### DEPENDENCIES
+use() {
+    local option=$1 requisite=$2 lib=$3; shift 3
+    local enabled=${!option}
+
+    if (( enabled )); then
+        if haslib "$lib"; then
+            for lib in "$lib" "$@"; do
+                haslib "$lib" && ldflags+=( -l"$lib" )
+            done
+            echo "INFO:     Enabled $option (lib$lib)."
+            return 0
+
+        elif [[ $requisite == required ]]; then
+            echo >&2 "ERROR:    $option was enabled but is missing $lib library.  Please install this library before continuing."
+            exit 1
+
+        else
+            echo >&2 "WARNING:  $option was enabled but is missing $lib library.  Will continue with $option disabled!"
+            return 1
+
+        fi
+
+    elif [[ $requisite == required ]]; then
+        echo >&2 "ERROR:    $option was required but is not enabled.  Please enable the option or remove this target before continuing."
+        exit 1
+
+    else
+        echo "INFO:     $option is supported but not enabled."
+        return 1
+    fi
+}
+use_mpw_sodium() {
+    local requisite=$1
+    use mpw_sodium "$requisite" sodium && cflags+=( -D"MPW_SODIUM=1" ) ||:
+}
+use_mpw_color() {
+    local requisite=$1
+    use mpw_color "$requisite" curses tinfo && cflags+=( -D"MPW_COLOR=1" ) ||:
+}
+use_mpw_json() {
+    local requisite=$1
+    use mpw_json "$requisite" json-c && cflags+=( -D"MPW_JSON=1" ) ||:
+}
+use_mpw_xml() {
+    local requisite=$1
+    use mpw_xml "$requisite" xml2 && cflags+=( $(xml2-config --cflags) ) ldflags+=( $(xml2-config --libs) ) ||:
+}
+
+
+### BUILD TARGETS
+for target in "${targets_all[@]}"; do
+    if [[ $targets == 'all' || " $targets " = *" $target "*  ]]; then
+        echo
+        echo "Building target: $target..."
+        ( "$target" "$@" )
+    fi
+done
